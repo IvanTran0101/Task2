@@ -69,12 +69,54 @@ class PacmanGame:
                 self._apply_action(action)
 
     def _apply_action(self, action_name: str) -> bool:
+        # Precompute ghost positions for swap detection on this tick
+        rotation_now = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
+        ghosts_now = [
+            _transform_pos(g.get_position(self.steps), rotation_now, self.problem.width, self.problem.height)
+            for g in self.problem.ghosts
+        ]
+        ghosts_next = [
+            _transform_pos(g.get_position(self.steps + 1), rotation_now, self.problem.width, self.problem.height)
+            for g in self.problem.ghosts
+        ]
+        ghost_swaps = set(zip(ghosts_now, ghosts_next))
+
+        # Compute intended target position (for manual arrows and auto replay)
+        intended_pos = None
+        if action_name in ("North", "South", "West", "East", "Stop"):
+            dx, dy = {"North": (0, -1), "South": (0, 1), "West": (-1, 0), "East": (1, 0), "Stop": (0, 0)}[
+                action_name
+            ]
+            intended_pos = (self.current_state.pos[0] + dx, self.current_state.pos[1] + dy)
+        elif action_name.startswith("Teleport to "):
+            try:
+                intended_pos = eval(action_name.split(" to ")[1])
+            except Exception:
+                intended_pos = None
+
         successors = dict(self.problem.get_successors(self.current_state, self.steps))
         next_state = successors.get(action_name)
         if not next_state:
+            # If the move was rejected by the model due to a ghost pass-through, treat as death
+            if intended_pos is not None and (intended_pos, self.current_state.pos) in ghost_swaps:
+                print("Game Over!")
+                self.reset_game()
+                return False
             return False
         self.current_state = next_state
         self.steps += 1
+
+        # After applying the action, ensure Pac-Man is not sharing a tile with a ghost.
+        rotation = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
+        ghost_positions = {
+            _transform_pos(ghost.get_position(self.steps), rotation, self.problem.width, self.problem.height)
+            for ghost in self.problem.ghosts
+        }
+        if self.current_state.pos in ghost_positions:
+            print("Game Over!")
+            self.reset_game()
+            return False
+
         if self.problem.is_goal(self.current_state):
             print("You Win!")
             self.reset_game()
@@ -82,7 +124,16 @@ class PacmanGame:
 
     # ------------------------------------------------------------------ Update
     def _update(self):
-        if self.game_state == "AUTO_SEARCH":
+        if self.game_state == "MANUAL":
+            rotation = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
+            ghost_positions = {
+                _transform_pos(ghost.get_position(self.steps), rotation, self.problem.width, self.problem.height)
+                for ghost in self.problem.ghosts
+            }
+            if self.current_state.pos in ghost_positions:
+                print("Game Over!")
+                self.reset_game()
+        elif self.game_state == "AUTO_SEARCH":
             print("Finding optimal path using A*...")
             path, cost = solve_pacman_problem(self.problem)
             if path:

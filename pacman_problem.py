@@ -221,7 +221,16 @@ class PacmanProblem:
         width_rot, height_rot = self.rotated_dimensions[current_rotation]
         current_walls = self.rotated_walls[current_rotation]
         current_teleports = self.rotated_teleports[current_rotation]
-        ghost_positions = self._ghost_positions(next_g_cost, current_rotation)
+        ghost_positions_current = [
+            _transform_pos(ghost.get_position(current_g_cost), current_rotation, self.width, self.height)
+            for ghost in self.ghosts
+        ]
+        ghost_positions_next = [
+            _transform_pos(ghost.get_position(next_g_cost), current_rotation, self.width, self.height)
+            for ghost in self.ghosts
+        ]
+        ghost_positions_next_set = set(ghost_positions_next)
+        ghost_swaps = set(zip(ghost_positions_current, ghost_positions_next))
 
         actions = {
             "North": (0, -1),
@@ -236,13 +245,25 @@ class PacmanProblem:
             food: FrozenSet[Coordinate],
             pies: FrozenSet[Coordinate],
             next_step_mod: int,
-        ) -> Tuple[int, Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate]]:
+        ) -> Tuple[int, Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate], Set[Coordinate]]:
             next_rotation = self._current_rotation(next_step_mod)
             if next_rotation != current_rotation:
                 pos, food, pies = self._rotate_state_components(
                     pos, food, pies, current_rotation, next_rotation
                 )
-            return next_rotation, pos, food, pies
+            if next_rotation == current_rotation:
+                ghost_set = set(ghost_positions_next)
+            else:
+                ghost_set = {
+                    _transform_pos(
+                        _inverse_transform_pos(g_pos, current_rotation, self.width, self.height),
+                        next_rotation,
+                        self.width,
+                        self.height,
+                    )
+                    for g_pos in ghost_positions_next
+                }
+            return next_rotation, pos, food, pies, ghost_set
 
         next_step_mod = (current_state.step_mod_cycle + 1) % self.ROTATION_CYCLE
 
@@ -251,7 +272,10 @@ class PacmanProblem:
             if not (0 <= nx < width_rot and 0 <= ny < height_rot):
                 continue
             next_pos = (nx, ny)
-            if (next_pos in current_walls and current_state.pie_timer <= 0) or next_pos in ghost_positions:
+            if (next_pos in current_walls and current_state.pie_timer <= 0) or next_pos in ghost_positions_next_set:
+                continue
+            # Pass-through swap: Pac-Man goes to a ghost's current tile while that ghost moves into Pac-Man's tile
+            if (next_pos, current_state.pos) in ghost_swaps:
                 continue
 
             pie_timer = max(0, current_state.pie_timer - 1)
@@ -261,9 +285,11 @@ class PacmanProblem:
                 next_pies = current_state.pies_left - {next_pos}
 
             next_food = current_state.food_left - {next_pos}
-            next_rotation, rotated_pos, rotated_food, rotated_pies = rotate_after_steps(
+            next_rotation, rotated_pos, rotated_food, rotated_pies, rotated_ghosts = rotate_after_steps(
                 next_pos, next_food, next_pies, next_step_mod
             )
+            if rotated_pos in rotated_ghosts:
+                continue
 
             successors.append(
                 (
@@ -280,7 +306,10 @@ class PacmanProblem:
 
         if current_state.pos in current_teleports:
             for target in current_teleports:
-                if target == current_state.pos or target in ghost_positions:
+                if target == current_state.pos or target in ghost_positions_next_set:
+                    continue
+                # Pass-through on teleport too
+                if (target, current_state.pos) in ghost_swaps:
                     continue
                 pie_timer = max(0, current_state.pie_timer - 1)
                 next_pies = current_state.pies_left
@@ -289,9 +318,11 @@ class PacmanProblem:
                     next_pies = current_state.pies_left - {target}
 
                 next_food = current_state.food_left - {target}
-                next_rotation, rotated_pos, rotated_food, rotated_pies = rotate_after_steps(
+                next_rotation, rotated_pos, rotated_food, rotated_pies, rotated_ghosts = rotate_after_steps(
                     target, next_food, next_pies, next_step_mod
                 )
+                if rotated_pos in rotated_ghosts:
+                    continue
 
                 successors.append(
                     (
