@@ -106,33 +106,69 @@ class PacmanProblem:
     def parse_layout(self):
         original_walls, food_original = set(), set()
         self.pies, self.ghosts, self.exit = set(), [], None
+        self.teleports = set()  # dynamic: collected from 'T' tiles (no hard-coded coordinates)
+
+        # Scan layout to collect walls, food, start, ghosts, pies, exit, teleports
         for y, row in enumerate(self.layout_text):
             for x, char in enumerate(row):
-                if char == '%': original_walls.add((x, y))
-                elif char == '.': food_original.add((x, y))
-                elif char == 'P': self.initial_pacman_pos = (x, y)
+                if char == '%':
+                    original_walls.add((x, y))
+                elif char == '.':
+                    food_original.add((x, y))
+                elif char == 'P':
+                    self.initial_pacman_pos = (x, y)
                 elif char == 'G':
+                    # Ghost moves horizontally within its corridor (between walls)
                     x_left, x_right = x, x
-                    while x_left > 0 and self.layout_text[y][x_left - 1] != '%': x_left -= 1
-                    while x_right < self.width - 1 and self.layout_text[y][x_right + 1] != '%': x_right += 1
+                    while x_left > 0 and self.layout_text[y][x_left - 1] != '%':
+                        x_left -= 1
+                    while x_right < self.width - 1 and self.layout_text[y][x_right + 1] != '%':
+                        x_right += 1
                     self.ghosts.append(Ghost((x_left, y), x_right - x_left + 1))
-                elif char == 'O': self.pies.add((x, y))
-                elif char == 'E': self.exit = (x, y)
+                elif char == 'O':
+                    self.pies.add((x, y))
+                elif char == 'E':
+                    self.exit = (x, y)
+                elif char == 'T':
+                    self.teleports.add((x, y))
 
+        # Freeze sets
         self.initial_food = frozenset(food_original)
         self.walls = [frozenset(original_walls)]
-        self.teleports = {c for c in {(1, 1), (34, 1), (1, 16), (34, 16)} if c not in self.walls[0]}
-        
+        self.teleports = frozenset(self.teleports)
+
+        # Fallback: if no 'T' tiles were provided, infer inner-corner teleports from the outer wall frame
+        if not self.teleports:
+            # Assumption: maps have a continuous wall border (%) on the outermost frame.
+            # Inner corners just inside the frame: (1,1), (W-2,1), (1,H-2), (W-2,H-2)
+            candidates = [
+                (1, 1),
+                (self.width - 2, 1),
+                (1, self.height - 2),
+                (self.width - 2, self.height - 2),
+            ]
+            inferred = [c for c in candidates if c not in self.walls[0]]
+            self.teleports = frozenset(inferred)
+
+        # -------- Precompute true distances & heuristic caches --------
         start_time = time.time()
         print("Pre-calculating true maze distances for heuristic (with teleports)...")
+
+        # Points of interest: all foods (+ exit if present)
         points_of_interest = self.initial_food | ({self.exit} if self.exit else set())
-        self.true_dist_cache = {p: _bfs_all_pairs(p, self.walls[0], self.teleports, self.width, self.height) for p in points_of_interest}
+
+        # TRUE maze distance (4-dir + teleports) from each POI to all cells
+        self.true_dist_cache = {
+            p: _bfs_all_pairs(p, self.walls[0], self.teleports, self.width, self.height)
+            for p in points_of_interest
+        }
 
         print("Pre-calculating heuristic caches using true distances...")
         self.mst_cache = {}
         self.food_to_exit_cache = {}
         food_list = list(self.initial_food)
 
+        # Cache MST(foods) and min distance from foods -> exit (subset size capped at 12)
         for i in range(1, len(food_list) + 1):
             if i > 12:
                 print(f"Warning: Too many food pellets ({len(food_list)}), stopping pre-calculation at subset size {i-1}.")
@@ -143,10 +179,10 @@ class PacmanProblem:
                 if self.exit:
                     min_dist = min(self.true_dist_cache[food].get(self.exit, float('inf')) for food in subset_fs)
                     self.food_to_exit_cache[subset_fs] = min_dist
-        
+
         end_time = time.time()
         print(f"Heuristic pre-calculation complete in {end_time - start_time:.2f} seconds.")
-
+    
     def get_initial_state(self):
         return PacmanSearchState(self.initial_pacman_pos, self.initial_food, 0)
 
