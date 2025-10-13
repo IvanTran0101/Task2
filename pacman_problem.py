@@ -1,209 +1,309 @@
-# pacman_problem.py
-# FINAL CORRECTED VERSION: Restores the missing _transform_pos function to fix the ImportError.
+from __future__ import annotations
 
-import heapq
-import itertools
-import time
-from collections import deque
+from dataclasses import dataclass
+from typing import FrozenSet, Iterable, List, Optional, Set, Tuple
 
-def chebyshev_distance(pos1, pos2):
-    """A fast and admissible heuristic for grid-based pathfinding."""
-    return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
+Coordinate = Tuple[int, int]
 
-# <<< START OF FIX: FUNCTION RESTORED >>>
-def _transform_pos(pos, rotation_index, width, height):
-    """The single source of truth for all rotation logic."""
+
+def _transform_pos(pos: Coordinate, rotation_index: int, width: int, height: int) -> Coordinate:
+    """Rotate a position clockwise by 90° * rotation_index."""
     x, y = pos
-    # Even in the no-rotation version, this is called by game.py with rotation_index=0 for drawing.
-    if rotation_index == 0: return (x, y)
-    elif rotation_index == 1: return (y, width - 1 - x)
-    elif rotation_index == 2: return (width - 1 - x, height - 1 - y)
-    elif rotation_index == 3: return (height - 1 - y, x)
-    return pos
-# <<< END OF FIX >>>
+    r = rotation_index % 4
+    if r == 0:
+        return x, y
+    if r == 1:
+        return y, width - 1 - x
+    if r == 2:
+        return width - 1 - x, height - 1 - y
+    return height - 1 - y, x
 
-def _bfs_all_pairs(start_pos, walls, teleports, width, height):
-    """
-    Runs a BFS from a start position to find the shortest path to all other points,
-    correctly handling teleports.
-    """
-    q = deque([(start_pos, 0)])
-    visited = {start_pos}
-    distances = {start_pos: 0}
-    
-    while q:
-        curr, dist = q.popleft()
-        
-        # 1. Check for standard moves
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            neighbor = (curr[0] + dx, curr[1] + dy)
-            if 0 <= neighbor[0] < width and 0 <= neighbor[1] < height and neighbor not in visited and neighbor not in walls:
-                visited.add(neighbor)
-                distances[neighbor] = dist + 1
-                q.append((neighbor, dist + 1))
-        
-        # 2. If at a teleport, check teleport moves
-        if curr in teleports:
-            for target_corner in teleports:
-                if target_corner != curr and target_corner not in visited:
-                    visited.add(target_corner)
-                    distances[target_corner] = dist + 1
-                    q.append((target_corner, dist + 1))
-                    
-    return distances
 
-def _calculate_mst_true_dist(points, true_dist_cache):
-    """Calculates MST cost using pre-computed true path distances."""
-    if not points or len(points) <= 1: return 0
-    all_points = list(points)
-    start_node = all_points[0]
-    visited = {start_node}
-    edges = [(true_dist_cache[start_node].get(p, float('inf')), p) for p in all_points[1:]]
-    heapq.heapify(edges)
-    mst_cost = 0
-    while edges and len(visited) < len(all_points):
-        cost, node = heapq.heappop(edges)
-        if node in visited: continue
-        visited.add(node)
-        mst_cost += cost
-        for next_node in all_points:
-            if next_node not in visited:
-                heapq.heappush(edges, (true_dist_cache[node].get(next_node, float('inf')), next_node))
-    return mst_cost
+def _inverse_transform_pos(pos: Coordinate, rotation_index: int, width: int, height: int) -> Coordinate:
+    """Inverse rotation for _transform_pos (explicit to handle swapped dimensions)."""
+    r = rotation_index % 4
+    x, y = pos
+    if r == 0:
+        return x, y
+    if r == 1:
+        return (width - 1 - y, x)
+    if r == 2:
+        return (width - 1 - x, height - 1 - y)
+    # r == 3
+    return (y, height - 1 - x)
+
+
+def _rotate_points(points: Iterable[Coordinate], rotation_index: int, width: int, height: int) -> FrozenSet[Coordinate]:
+    return frozenset(_transform_pos(p, rotation_index, width, height) for p in points)
+
+
+@dataclass(frozen=True)
+class PacmanSearchState:
+    pos: Coordinate
+    food_left: FrozenSet[Coordinate]
+    pies_left: FrozenSet[Coordinate]
+    pie_timer: int
+    step_mod_cycle: int  # 0..119 (4 * 30 steps)
+
 
 class Ghost:
-    def __init__(self, start_pos, move_range):
+    def __init__(self, start_pos: Coordinate, move_range: int) -> None:
         self.start_pos = start_pos
         self.move_range = move_range
         self.period = (move_range - 1) * 2 if move_range > 1 else 0
-    def get_position(self, g_cost):
-        if self.period == 0: return self.start_pos
+
+    def get_position(self, g_cost: int) -> Coordinate:
+        if self.period == 0:
+            return self.start_pos
         phase = g_cost % self.period
         delta = phase if phase < self.move_range else self.period - phase
-        return (self.start_pos[0] + delta, self.start_pos[1])
+        return self.start_pos[0] + delta, self.start_pos[1]
 
-class PacmanSearchState:
-    def __init__(self, pos, food_left, pie_timer):
-        self.pos = pos
-        self.food_left = food_left
-        self.pie_timer = pie_timer
-        self._hash = hash((self.pos, self.food_left, self.pie_timer))
-    def __eq__(self, other):
-        return isinstance(other, PacmanSearchState) and \
-               self.pos == other.pos and \
-               self.food_left == other.food_left and \
-               self.pie_timer == other.pie_timer
-    def __hash__(self):
-        return self._hash
 
 class PacmanProblem:
-    def __init__(self, layout_text):
+    """Pac-Man search domain with teleports and 90° right rotations every 30 steps."""
+
+    ROTATION_PERIOD = 30
+    ROTATION_CYCLE = ROTATION_PERIOD * 4
+
+    def __init__(self, layout_text: List[str]) -> None:
         self.layout_text = layout_text
         self.width = len(layout_text[0])
         self.height = len(layout_text)
-        self.parse_layout()
+        self._parse_layout()
 
-    def parse_layout(self):
-        original_walls, food_original = set(), set()
-        self.pies, self.ghosts, self.exit = set(), [], None
-        self.teleports = set()  # dynamic: collected from 'T' tiles (no hard-coded coordinates)
+    # ------------------------------------------------------------------ Layout
+    def _parse_layout(self) -> None:
+        walls: Set[Coordinate] = set()
+        food: Set[Coordinate] = set()
+        pies: Set[Coordinate] = set()
+        teleports: Set[Coordinate] = set()
+        self.ghosts: List[Ghost] = []
+        self.exit: Optional[Coordinate] = None
+        self.initial_pacman_pos: Optional[Coordinate] = None
 
-        # Scan layout to collect walls, food, start, ghosts, pies, exit, teleports
         for y, row in enumerate(self.layout_text):
             for x, char in enumerate(row):
+                pos = (x, y)
                 if char == '%':
-                    original_walls.add((x, y))
+                    walls.add(pos)
                 elif char == '.':
-                    food_original.add((x, y))
+                    food.add(pos)
                 elif char == 'P':
-                    self.initial_pacman_pos = (x, y)
+                    self.initial_pacman_pos = pos
                 elif char == 'G':
-                    # Ghost moves horizontally within its corridor (between walls)
-                    x_left, x_right = x, x
-                    while x_left > 0 and self.layout_text[y][x_left - 1] != '%':
-                        x_left -= 1
-                    while x_right < self.width - 1 and self.layout_text[y][x_right + 1] != '%':
-                        x_right += 1
-                    self.ghosts.append(Ghost((x_left, y), x_right - x_left + 1))
+                    left, right = x, x
+                    while left > 0 and self.layout_text[y][left - 1] != '%':
+                        left -= 1
+                    while right < self.width - 1 and self.layout_text[y][right + 1] != '%':
+                        right += 1
+                    self.ghosts.append(Ghost((left, y), right - left + 1))
                 elif char == 'O':
-                    self.pies.add((x, y))
+                    pies.add(pos)
                 elif char == 'E':
-                    self.exit = (x, y)
+                    self.exit = pos
                 elif char == 'T':
-                    self.teleports.add((x, y))
+                    teleports.add(pos)
 
-        # Freeze sets
-        self.initial_food = frozenset(food_original)
-        self.walls = [frozenset(original_walls)]
-        self.teleports = frozenset(self.teleports)
+        if self.initial_pacman_pos is None:
+            raise ValueError("Layout missing Pacman start 'P'.")
 
-        # Fallback: if no 'T' tiles were provided, infer inner-corner teleports from the outer wall frame
-        if not self.teleports:
-            # Assumption: maps have a continuous wall border (%) on the outermost frame.
-            # Inner corners just inside the frame: (1,1), (W-2,1), (1,H-2), (W-2,H-2)
+        # Teleports fallback: inner corners just inside the outer wall frame.
+        if not teleports:
             candidates = [
                 (1, 1),
                 (self.width - 2, 1),
                 (1, self.height - 2),
                 (self.width - 2, self.height - 2),
             ]
-            inferred = [c for c in candidates if c not in self.walls[0]]
-            self.teleports = frozenset(inferred)
+            for corner in candidates:
+                if 0 <= corner[0] < self.width and 0 <= corner[1] < self.height and corner not in walls:
+                    teleports.add(corner)
 
-        # -------- Precompute true distances & heuristic caches --------
-        start_time = time.time()
-        print("Pre-calculating true maze distances for heuristic (with teleports)...")
+        self.base_walls = frozenset(walls)
+        self.initial_food = frozenset(food)
+        self.initial_pies = frozenset(pies)
+        self.teleports_base = frozenset(teleports)
 
-        # Points of interest: all foods (+ exit if present)
-        points_of_interest = self.initial_food | ({self.exit} if self.exit else set())
+        # Legacy attributes for external modules.
+        self.walls = [self.base_walls]
+        self.teleports = self.teleports_base
+        self.pies = self.initial_pies
+        self.pie_duration = 5
 
-        # TRUE maze distance (4-dir + teleports) from each POI to all cells
-        self.true_dist_cache = {
-            p: _bfs_all_pairs(p, self.walls[0], self.teleports, self.width, self.height)
-            for p in points_of_interest
+        # Precompute rotated geometries so we can "paste" a rotated map quickly.
+        self.rotated_dimensions: List[Tuple[int, int]] = [
+            (self.width, self.height),
+            (self.height, self.width),
+            (self.width, self.height),
+            (self.height, self.width),
+        ]
+        self.rotated_walls = [
+            _rotate_points(self.base_walls, r, self.width, self.height) for r in range(4)
+        ]
+        self.rotated_teleports = [
+            _rotate_points(self.teleports_base, r, self.width, self.height) for r in range(4)
+        ]
+        self.rotated_exit = [
+            _transform_pos(self.exit, r, self.width, self.height) if self.exit else None for r in range(4)
+        ]
+
+    # ------------------------------------------------------------------ Helpers
+    def _current_rotation(self, step_mod_cycle: int) -> int:
+        return (step_mod_cycle // self.ROTATION_PERIOD) % 4
+
+    def _rotate_state_components(
+        self,
+        pos: Coordinate,
+        food: FrozenSet[Coordinate],
+        pies: FrozenSet[Coordinate],
+        from_rotation: int,
+        to_rotation: int,
+    ) -> Tuple[Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate]]:
+        if from_rotation == to_rotation:
+            return pos, food, pies
+
+        base_pos = _inverse_transform_pos(pos, from_rotation, self.width, self.height)
+        new_pos = _transform_pos(base_pos, to_rotation, self.width, self.height)
+
+        base_food = (
+            _inverse_transform_pos(f, from_rotation, self.width, self.height) for f in food
+        )
+        new_food = frozenset(
+            _transform_pos(f, to_rotation, self.width, self.height) for f in base_food
+        )
+
+        base_pies = (
+            _inverse_transform_pos(p, from_rotation, self.width, self.height) for p in pies
+        )
+        new_pies = frozenset(
+            _transform_pos(p, to_rotation, self.width, self.height) for p in base_pies
+        )
+
+        return new_pos, new_food, new_pies
+
+    def _ghost_positions(self, g_cost: int, rotation: int) -> Set[Coordinate]:
+        if not self.ghosts:
+            return set()
+        return {
+            _transform_pos(ghost.get_position(g_cost), rotation, self.width, self.height)
+            for ghost in self.ghosts
         }
 
-        print("Pre-calculating heuristic caches using true distances...")
-        self.mst_cache = {}
-        self.food_to_exit_cache = {}
-        food_list = list(self.initial_food)
+    # ------------------------------------------------------------------ API
+    def get_initial_state(self) -> PacmanSearchState:
+        return PacmanSearchState(
+            pos=self.initial_pacman_pos,  # type: ignore[arg-type]
+            food_left=self.initial_food,
+            pies_left=self.initial_pies,
+            pie_timer=0,
+            step_mod_cycle=0,
+        )
 
-        # Cache MST(foods) and min distance from foods -> exit (subset size capped at 12)
-        for i in range(1, len(food_list) + 1):
-            if i > 12:
-                print(f"Warning: Too many food pellets ({len(food_list)}), stopping pre-calculation at subset size {i-1}.")
-                break
-            for subset in itertools.combinations(food_list, i):
-                subset_fs = frozenset(subset)
-                self.mst_cache[subset_fs] = _calculate_mst_true_dist(subset_fs, self.true_dist_cache)
-                if self.exit:
-                    min_dist = min(self.true_dist_cache[food].get(self.exit, float('inf')) for food in subset_fs)
-                    self.food_to_exit_cache[subset_fs] = min_dist
+    def is_goal(self, state: PacmanSearchState) -> bool:
+        if state.food_left:
+            return False
+        if not self.exit:
+            return True
+        rotation = self._current_rotation(state.step_mod_cycle)
+        exit_pos = self.rotated_exit[rotation]
+        return state.pos == exit_pos
 
-        end_time = time.time()
-        print(f"Heuristic pre-calculation complete in {end_time - start_time:.2f} seconds.")
-    
-    def get_initial_state(self):
-        return PacmanSearchState(self.initial_pacman_pos, self.initial_food, 0)
+    def get_successors(
+        self,
+        current_state: PacmanSearchState,
+        current_g_cost: int,
+    ) -> List[Tuple[str, PacmanSearchState]]:
+        successors: List[Tuple[str, PacmanSearchState]] = []
+        next_g_cost = current_g_cost + 1
 
-    def is_goal(self, state):
-        return not state.food_left and (not self.exit or state.pos == self.exit)
+        current_rotation = self._current_rotation(current_state.step_mod_cycle)
+        width_rot, height_rot = self.rotated_dimensions[current_rotation]
+        current_walls = self.rotated_walls[current_rotation]
+        current_teleports = self.rotated_teleports[current_rotation]
+        ghost_positions = self._ghost_positions(next_g_cost, current_rotation)
 
-    def get_successors(self, current_state, current_g_cost):
-        successors, next_g_cost = [], current_g_cost + 1
-        current_walls = self.walls[0]
-        ghost_positions = {g.get_position(next_g_cost) for g in self.ghosts}
-        actions = {'North': (0, -1), 'South': (0, 1), 'West': (-1, 0), 'East': (1, 0), 'Stop': (0, 0)}
+        actions = {
+            "North": (0, -1),
+            "South": (0, 1),
+            "West": (-1, 0),
+            "East": (1, 0),
+            "Stop": (0, 0),
+        }
+
+        def rotate_after_steps(
+            pos: Coordinate,
+            food: FrozenSet[Coordinate],
+            pies: FrozenSet[Coordinate],
+            next_step_mod: int,
+        ) -> Tuple[int, Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate]]:
+            next_rotation = self._current_rotation(next_step_mod)
+            if next_rotation != current_rotation:
+                pos, food, pies = self._rotate_state_components(
+                    pos, food, pies, current_rotation, next_rotation
+                )
+            return next_rotation, pos, food, pies
+
+        next_step_mod = (current_state.step_mod_cycle + 1) % self.ROTATION_CYCLE
+
         for name, (dx, dy) in actions.items():
-            next_pos = (current_state.pos[0] + dx, current_state.pos[1] + dy)
+            nx, ny = current_state.pos[0] + dx, current_state.pos[1] + dy
+            if not (0 <= nx < width_rot and 0 <= ny < height_rot):
+                continue
+            next_pos = (nx, ny)
             if (next_pos in current_walls and current_state.pie_timer <= 0) or next_pos in ghost_positions:
                 continue
+
             pie_timer = max(0, current_state.pie_timer - 1)
-            if next_pos in self.pies: pie_timer = 5
-            successors.append((name, PacmanSearchState(next_pos, current_state.food_left - {next_pos}, pie_timer)))
-        if current_state.pos in self.teleports:
-            for corner in self.teleports:
-                if corner != current_state.pos:
-                    pie_timer = max(0, current_state.pie_timer - 1)
-                    successors.append((f"Teleport to {corner}", PacmanSearchState(corner, current_state.food_left, pie_timer)))
+            next_pies = current_state.pies_left
+            if next_pos in current_state.pies_left:
+                pie_timer = self.pie_duration
+                next_pies = current_state.pies_left - {next_pos}
+
+            next_food = current_state.food_left - {next_pos}
+            next_rotation, rotated_pos, rotated_food, rotated_pies = rotate_after_steps(
+                next_pos, next_food, next_pies, next_step_mod
+            )
+
+            successors.append(
+                (
+                    name,
+                    PacmanSearchState(
+                        pos=rotated_pos,
+                        food_left=rotated_food,
+                        pies_left=rotated_pies,
+                        pie_timer=pie_timer,
+                        step_mod_cycle=next_step_mod,
+                    ),
+                )
+            )
+
+        if current_state.pos in current_teleports:
+            for target in current_teleports:
+                if target == current_state.pos or target in ghost_positions:
+                    continue
+                pie_timer = max(0, current_state.pie_timer - 1)
+                next_pies = current_state.pies_left
+                if target in current_state.pies_left:
+                    pie_timer = self.pie_duration
+                    next_pies = current_state.pies_left - {target}
+
+                next_food = current_state.food_left - {target}
+                next_rotation, rotated_pos, rotated_food, rotated_pies = rotate_after_steps(
+                    target, next_food, next_pies, next_step_mod
+                )
+
+                successors.append(
+                    (
+                        f"Teleport to {target}",
+                        PacmanSearchState(
+                            pos=rotated_pos,
+                            food_left=rotated_food,
+                            pies_left=rotated_pies,
+                            pie_timer=pie_timer,
+                            step_mod_cycle=next_step_mod,
+                        ),
+                    )
+                )
+
         return successors
