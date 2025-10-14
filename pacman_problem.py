@@ -278,6 +278,16 @@ class PacmanProblem:
             if (next_pos, current_state.pos) in ghost_swaps:
                 continue
 
+            # Auto-teleport to the opposite (farthest) corner if stepping onto a teleport tile
+            if next_pos in current_teleports:
+                # pick the farthest teleport (Manhattan) as the opposite corner
+                candidates = [t for t in current_teleports if t != next_pos]
+                if candidates:
+                    tx, ty = next_pos
+                    def manhattan(p):
+                        return abs(p[0] - tx) + abs(p[1] - ty)
+                    next_pos = max(candidates, key=manhattan)
+
             pie_timer = max(0, current_state.pie_timer - 1)
             next_pies = current_state.pies_left
             if next_pos in current_state.pies_left:

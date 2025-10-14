@@ -67,6 +67,33 @@ class PacmanGame:
             action = key_to_action.get(event.key)
             if action:
                 self._apply_action(action)
+            else:
+                # Teleport controls in MANUAL mode
+                # - Press 'T' to use the first available teleport
+                # - Press '1'..'4' to choose a specific teleport option when multiple exist
+                teleport_keys = {pygame.K_t, pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4}
+                if event.key in teleport_keys:
+                    # Ask the model for available teleport actions from this state
+                    succ = dict(self.problem.get_successors(self.current_state, self.steps))
+                    tp_actions = [k for k in succ.keys() if isinstance(k, str) and k.startswith("Teleport to ")]
+                    # Fallback: if model didn't expose teleport actions but we're on a teleport tile,
+                    # synthesize them from the rotated teleports set
+                    if not tp_actions:
+                        rotation = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
+                        teleports_here = self.problem.rotated_teleports[rotation]
+                        if self.current_state.pos in teleports_here:
+                            others = [t for t in teleports_here if t != self.current_state.pos]
+                            tp_actions = [f"Teleport to {t}" for t in others]
+                    if not tp_actions:
+                        return
+                    if event.key == pygame.K_t:
+                        chosen = tp_actions[0]
+                    else:
+                        index = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3}[event.key]
+                        if index >= len(tp_actions):
+                            return
+                        chosen = tp_actions[index]
+                    self._apply_action(chosen)
 
     def _apply_action(self, action_name: str) -> bool:
         # Precompute ghost positions for swap detection on this tick
@@ -232,7 +259,7 @@ class PacmanGame:
             self._draw_text("Press 'M' for Manual or 'A' for Auto Search", (center_x, self.window_size_h / 2))
         elif self.game_state == "MANUAL":
             self._draw_text(
-                f"Manual | Steps: {self.steps} | Food: {len(self.current_state.food_left)}",
+                f"Manual | Steps: {self.steps} | Food: {len(self.current_state.food_left)} | Teleport: 'T' or '1-4'",
                 (center_x, 15),
             )
         elif self.game_state == "AUTO_SEARCH":
