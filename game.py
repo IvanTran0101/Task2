@@ -1,4 +1,5 @@
 import pygame
+import math
 import threading
 
 from pacman_problem import PacmanProblem, _transform_pos
@@ -33,6 +34,8 @@ class PacmanGame:
         self.solution_cost = 0
         self.animation_delay = 100
         self.last_move_time = 0
+        # Pac-Man facing direction (dx, dy). Default: face right
+        self.last_dir = (1, 0)
         # Async search state
         self._search_thread = None
         self._searching = False
@@ -111,9 +114,12 @@ class PacmanGame:
         # Compute intended target position (for manual arrows and auto replay)
         intended_pos = None
         if action_name in ("North", "South", "West", "East"):
-            dx, dy = {"North": (0, -1), "South": (0, 1), "West": (-1, 0), "East": (1, 0)}[
+            dir_map = {"North": (0, -1), "South": (0, 1), "West": (-1, 0), "East": (1, 0)}
+            dx, dy = dir_map[
                 action_name
             ]
+            # Update facing
+            self.last_dir = (dx, dy)
             intended_pos = (self.current_state.pos[0] + dx, self.current_state.pos[1] + dy)
         elif action_name.startswith("Teleport to "):
             try:
@@ -245,7 +251,7 @@ class PacmanGame:
 
     # ------------------------------------------------------------------ Rendering
     def _draw(self):
-        self.screen.fill((0, 0, 0))
+        self.screen.fill((10, 10, 20))
 
         rotation = self._current_rotation()
         width_rot, height_rot = self._current_dimensions()
@@ -266,6 +272,7 @@ class PacmanGame:
         if exit_pos:
             elements.append(({exit_pos}, "exit"))
 
+        pulse = 100 + (pygame.time.get_ticks() // 8) % 80
         for positions, elem_type in elements:
             for sx, sy in positions:
                 rect = pygame.Rect(
@@ -277,36 +284,107 @@ class PacmanGame:
                 if elem_type == "wall":
                     pygame.draw.rect(self.screen, (0, 0, 200), rect)
                 elif elem_type == "teleport":
-                    pygame.draw.rect(self.screen, (148, 0, 211), rect)
+                    # pulsing teleport
+                    pygame.draw.rect(self.screen, (90, 0, 130), rect)
+                    pygame.draw.rect(self.screen, (160, 0, 210), rect.inflate(-4, -4), 2)
                 elif elem_type == "food":
                     pygame.draw.circle(self.screen, (255, 255, 255), rect.center, 2)
                 elif elem_type == "pie":
                     pygame.draw.circle(self.screen, (255, 182, 193), rect.center, 6)
                 elif elem_type == "ghost":
+                    # shadow
+                    shadow = pygame.Rect(rect.x+2, rect.y+rect.height-6, rect.width-4, 6)
+                    pygame.draw.ellipse(self.screen, (0,0,0,120), shadow)
                     pygame.draw.rect(self.screen, (255, 105, 180), rect)
                 elif elem_type == "exit":
                     pygame.draw.rect(self.screen, (0, 255, 0), rect)
                 elif elem_type == "pacman":
-                    pac_color = (255, 255, 0) if self.current_state.pie_timer <= 0 else (255, 0, 0)
-                    pygame.draw.circle(self.screen, pac_color, rect.center, self.tile_size // 2)
+                    # shadow
+                    shadow = pygame.Rect(rect.x+2, rect.y+rect.height-6, rect.width-4, 6)
+                    pygame.draw.ellipse(self.screen, (0,0,0,120), shadow)
+                    self._draw_pacman(rect)
 
         center_x = self.window_size_w / 2
         if self.game_state == "MENU":
             self._draw_text("Press 'M' for Manual or 'A' for Auto Search", (center_x, self.window_size_h / 2))
         elif self.game_state == "MANUAL":
+            left = self.problem.ROTATION_PERIOD - (self.current_state.step_mod_cycle % self.problem.ROTATION_PERIOD)
             self._draw_text(
-                f"Manual | Steps: {self.steps} | Food: {len(self.current_state.food_left)} | Teleport: 'T' or '1-4'",
+                f"Manual | Steps: {self.steps} | Food: {len(self.current_state.food_left)} | Pie: {self.current_state.pie_timer} | Rot in: {left} | Teleport: 'T' or '1-4'",
                 (center_x, 15),
             )
         elif self.game_state == "AUTO_SEARCH":
             dots = "." * (1 + (pygame.time.get_ticks() // 500) % 3)
             self._draw_text(f"Finding optimal path{dots}", (center_x, self.window_size_h / 2))
         elif self.game_state == "AUTO_ANIMATE":
+            left = self.problem.ROTATION_PERIOD - (self.current_state.step_mod_cycle % self.problem.ROTATION_PERIOD)
             self._draw_text(
-                f"Auto | Steps: {self.steps}/{self.solution_cost} | Food: {len(self.current_state.food_left)}",
+                f"Auto | Steps: {self.steps}/{self.solution_cost} | Food: {len(self.current_state.food_left)} | Pie: {self.current_state.pie_timer} | Rot in: {left}",
                 (center_x, 15),
             )
 
     def _draw_text(self, text, position, color=(255, 255, 255)):
         text_surface = self.font.render(text, True, color)
         self.screen.blit(text_surface, text_surface.get_rect(center=position))
+
+    # ------------------------------------------------------------------ Pac-Man drawing (Google Doodle-like)
+    def _draw_pacman(self, rect: pygame.Rect):
+        # Colors
+        bg_color = (10, 10, 20)
+        body_color = (255, 255, 0) if self.current_state.pie_timer <= 0 else (255, 0, 0)
+
+        cx, cy = rect.center
+        r = self.tile_size // 2
+
+        # Outline ring and body
+        pygame.draw.circle(self.screen, (0, 0, 0), (cx, cy), r)
+        pygame.draw.circle(self.screen, body_color, (cx, cy), r - 1)
+
+        # Facing angle from last_dir
+        dx, dy = self.last_dir
+        if dx == 0 and dy == 0:
+            dx, dy = (1, 0)
+        base_ang = math.atan2(dy, dx)
+
+        # Smooth mouth animation with sine; close when standing on teleport
+        rotation = self._current_rotation()
+        on_teleport = self.current_state.pos in self.problem.rotated_teleports[rotation]
+        if on_teleport:
+            mouth_deg = 0
+        else:
+            # Oscillate between 8° and 40° smoothly
+            t = pygame.time.get_ticks() * 0.012
+            mouth_min, mouth_max = 8.0, 40.0
+            mouth_deg = mouth_min + (mouth_max - mouth_min) * (0.5 * (1.0 + math.sin(t)))
+
+        mouth_rad = math.radians(mouth_deg)
+        a1 = base_ang + mouth_rad
+        a2 = base_ang - mouth_rad
+        p1 = (int(cx + r * math.cos(a1)), int(cy + r * math.sin(a1)))
+        p2 = (int(cx + r * math.cos(a2)), int(cy + r * math.sin(a2)))
+        pygame.draw.polygon(self.screen, bg_color, [(cx, cy), p1, p2])
+
+        # Eye
+        fx, fy = math.cos(base_ang), math.sin(base_ang)
+        px, py = -fy, fx
+        eye_x = int(cx + fx * r * 0.3 + px * r * -0.2)
+        eye_y = int(cy + fy * r * 0.3 + py * r * -0.2)
+        pygame.draw.circle(self.screen, (0, 0, 0), (eye_x, eye_y), max(2, r // 5))
+
+    # ------------------------------------------------------------------ Pac-Man drawing (mouth animation)
+    def _draw_pacman(self, rect: pygame.Rect):
+        import math as _m
+        # Color: yellow normally, red when under pie effect
+        pac_color = (255, 255, 0) if self.current_state.pie_timer <= 0 else (255, 0, 0)
+        bg_color = (10, 10, 20)
+        center = rect.center
+        radius = self.tile_size // 2
+        # Draw body
+        pygame.draw.circle(self.screen, pac_color, center, radius)
+        # Animate mouth opening/closing each tick (face right)
+        mouth_deg = 40 if (self.steps % 2 == 0) else 8
+        a1 = _m.radians(mouth_deg)
+        a2 = _m.radians(-mouth_deg)
+        p1 = (int(center[0] + radius * _m.cos(a1)), int(center[1] + radius * _m.sin(a1)))
+        p2 = (int(center[0] + radius * _m.cos(a2)), int(center[1] + radius * _m.sin(a2)))
+        pygame.draw.polygon(self.screen, bg_color, [center, p1, p2])

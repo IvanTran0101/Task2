@@ -330,9 +330,7 @@ class PacmanProblem:
 
         next_step_mod = (current_state.step_mod_cycle + 1) % self.ROTATION_CYCLE
 
-        # Order 4-direction moves by heuristic to guide A*
-        from strategies import pacman_heuristic  # local import to avoid circular deps at load time
-        move_succ: list[tuple[int, tuple[str, PacmanSearchState]]] = []
+        # Generate 4-direction moves without heuristic-based ordering
 
         for name, (dx, dy) in actions.items():
             nx, ny = current_state.pos[0] + dx, current_state.pos[1] + dy
@@ -379,20 +377,12 @@ class PacmanProblem:
                 step_mod_cycle=next_step_mod,
                 broken_walls=next_broken,
             )
-            h = pacman_heuristic(new_state, self)
-            move_succ.append((h, (name, new_state)))
-
-        # push moves ordered by increasing h
-        move_succ.sort(key=lambda x: x[0])
-        for _, item in move_succ:
-            successors.append(item)
+            successors.append((name, new_state))
 
         # Note: 'Stop' action is not part of the rules; not generated.
 
         if current_state.pos in current_teleports:
-            # Order teleport successors by heuristic to guide A* expansion
-            from strategies import pacman_heuristic  # local import to avoid circular issues at module load
-            tele_succ: list[tuple[int, tuple[str, PacmanSearchState]]] = []
+            # Generate teleport successors without heuristic-based ordering
             for target in current_teleports:
                 if (
                     target == current_state.pos
@@ -424,11 +414,6 @@ class PacmanProblem:
                     step_mod_cycle=next_step_mod,
                     broken_walls=current_state.broken_walls,
                 )
-                h = pacman_heuristic(new_state, self)
-                tele_succ.append((h, (f"Teleport to {target}", new_state)))
-
-            tele_succ.sort(key=lambda x: x[0])
-            for _, item in tele_succ:
-                successors.append(item)
+                successors.append((f"Teleport to {target}", new_state))
 
         return successors
