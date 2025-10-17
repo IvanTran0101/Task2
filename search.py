@@ -52,7 +52,6 @@ def a_star_search(problem, heuristic):
         if len(explored) % 10000 == 0:
             print(f"Explored {len(explored)} nodes... (Current path cost: {current_node.g_cost})")
 
-        # <<< CHANGE IS HERE >>>
         # Pass the current state and its g_cost to get successors
         for action, next_state in problem.get_successors(current_node.state, current_node.g_cost):
             child_node = Node(next_state, current_node, action, current_node.g_cost + 1)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import FrozenSet, Iterable, List, Optional, Set, Tuple
+from typing import FrozenSet, Iterable, List, Optional, Set, Tuple, Dict
 
 Coordinate = Tuple[int, int]
 
@@ -44,20 +44,13 @@ class PacmanSearchState:
     pies_left: FrozenSet[Coordinate]
     pie_timer: int
     step_mod_cycle: int  # 0..119 (4 * 30 steps)
+    # Set of base-map wall coordinates that have been destroyed by pies.
+    broken_walls: FrozenSet[Coordinate]
 
 
 class Ghost:
-    def __init__(self, start_pos: Coordinate, move_range: int) -> None:
+    def __init__(self, start_pos: Coordinate) -> None:
         self.start_pos = start_pos
-        self.move_range = move_range
-        self.period = (move_range - 1) * 2 if move_range > 1 else 0
-
-    def get_position(self, g_cost: int) -> Coordinate:
-        if self.period == 0:
-            return self.start_pos
-        phase = g_cost % self.period
-        delta = phase if phase < self.move_range else self.period - phase
-        return self.start_pos[0] + delta, self.start_pos[1]
 
 
 class PacmanProblem:
@@ -71,6 +64,11 @@ class PacmanProblem:
         self.width = len(layout_text[0])
         self.height = len(layout_text)
         self._parse_layout()
+        # Caches to speed up ghost position computation across the search
+        # Keyed by (g_cost, rotation_index, broken_walls_base)
+        self._ghost_pos_cache: Dict[Tuple[int, int, FrozenSet[Coordinate]], List[Coordinate]] = {}
+        # Seed positions at the start of a rotation window: (g0, rotation, broken_walls_base)
+        self._ghost_seed_cache: Dict[Tuple[int, int, FrozenSet[Coordinate]], List[Coordinate]] = {}
 
     # ------------------------------------------------------------------ Layout
     def _parse_layout(self) -> None:
@@ -92,12 +90,8 @@ class PacmanProblem:
                 elif char == 'P':
                     self.initial_pacman_pos = pos
                 elif char == 'G':
-                    left, right = x, x
-                    while left > 0 and self.layout_text[y][left - 1] != '%':
-                        left -= 1
-                    while right < self.width - 1 and self.layout_text[y][right + 1] != '%':
-                        right += 1
-                    self.ghosts.append(Ghost((left, y), right - left + 1))
+                    # Start exactly at the G position
+                    self.ghosts.append(Ghost((x, y)))
                 elif char == 'O':
                     pies.add(pos)
                 elif char == 'E':
@@ -182,13 +176,84 @@ class PacmanProblem:
 
         return new_pos, new_food, new_pies
 
-    def _ghost_positions(self, g_cost: int, rotation: int) -> Set[Coordinate]:
+    def _effective_walls(self, rotation: int, broken_walls_base: FrozenSet[Coordinate]) -> FrozenSet[Coordinate]:
+        """Rotated walls minus any broken wall tiles (broken stored in base coords)."""
+        if not broken_walls_base:
+            return self.rotated_walls[rotation]
+        broken_rot = frozenset(
+            _transform_pos(b, rotation, self.width, self.height) for b in broken_walls_base
+        )
+        return self.rotated_walls[rotation] - broken_rot
+
+    def _ghost_positions_continuous(
+        self,
+        g_cost: int,
+        rotation: int,
+        broken_walls_base: FrozenSet[Coordinate],
+    ) -> List[Coordinate]:
         if not self.ghosts:
-            return set()
-        return {
-            _transform_pos(ghost.get_position(g_cost), rotation, self.width, self.height)
-            for ghost in self.ghosts
-        }
+            return []
+
+        cache_key = (g_cost, rotation, broken_walls_base)
+        if cache_key in self._ghost_pos_cache:
+            return self._ghost_pos_cache[cache_key]
+
+        # Precompute rotated walls once per rotation, factoring broken walls
+        width_rot, height_rot = self.rotated_dimensions[rotation]
+        walls_rot = self._effective_walls(rotation, broken_walls_base)
+
+        # Steps since this rotation started; also the tick index at rotation start
+        s = g_cost % self.ROTATION_PERIOD
+        g0 = g_cost - s
+
+        # Seed positions at the start of this rotation window
+        seeds_key = (g0, rotation, broken_walls_base)
+        if seeds_key in self._ghost_seed_cache:
+            seeds = self._ghost_seed_cache[seeds_key]
+        else:
+            if g0 == 0:
+                seeds = [
+                    _transform_pos(ghost.start_pos, rotation, self.width, self.height)
+                    for ghost in self.ghosts
+                ]
+            else:
+                prev_rot = (rotation - 1) % 4
+                prev_positions = self._ghost_positions_continuous(g0 - 1, prev_rot, broken_walls_base)
+                seeds = []
+                for pos_prev_rot in prev_positions:
+                    base_prev = _inverse_transform_pos(pos_prev_rot, prev_rot, self.width, self.height)
+                    seed = _transform_pos(base_prev, rotation, self.width, self.height)
+                    seeds.append(seed)
+            self._ghost_seed_cache[seeds_key] = seeds
+
+        positions: List[Coordinate] = []
+        if s == 0:
+            # At the boundary, ghosts are at the seeds (possibly stuck inside walls)
+            positions = list(seeds)
+        else:
+            # Advance s steps in the current rotation's corridor from each seed
+            for sx, sy in seeds:
+                if not (0 <= sx < width_rot and 0 <= sy < height_rot) or (sx, sy) in walls_rot:
+                    positions.append((sx, sy))
+                    continue
+                L = sx
+                while L - 1 >= 0 and (L - 1, sy) not in walls_rot:
+                    L -= 1
+                R = sx
+                while R + 1 < width_rot and (R + 1, sy) not in walls_rot:
+                    R += 1
+                N = R - L + 1
+                if N <= 1:
+                    positions.append((sx, sy))
+                    continue
+                period = (N - 1) * 2
+                offset = sx - L
+                delta = (offset + s) % period
+                delta_ref = delta if delta <= (N - 1) else period - delta
+                positions.append((L + delta_ref, sy))
+
+        self._ghost_pos_cache[cache_key] = positions
+        return positions
 
     # ------------------------------------------------------------------ API
     def get_initial_state(self) -> PacmanSearchState:
@@ -198,6 +263,7 @@ class PacmanProblem:
             pies_left=self.initial_pies,
             pie_timer=0,
             step_mod_cycle=0,
+            broken_walls=frozenset(),
         )
 
     def is_goal(self, state: PacmanSearchState) -> bool:
@@ -219,16 +285,17 @@ class PacmanProblem:
 
         current_rotation = self._current_rotation(current_state.step_mod_cycle)
         width_rot, height_rot = self.rotated_dimensions[current_rotation]
-        current_walls = self.rotated_walls[current_rotation]
+        # Effective walls for this rotation exclude any walls that have been destroyed.
+        base_broken = current_state.broken_walls
+        current_walls = self._effective_walls(current_rotation, base_broken)
         current_teleports = self.rotated_teleports[current_rotation]
-        ghost_positions_current = [
-            _transform_pos(ghost.get_position(current_g_cost), current_rotation, self.width, self.height)
-            for ghost in self.ghosts
-        ]
-        ghost_positions_next = [
-            _transform_pos(ghost.get_position(next_g_cost), current_rotation, self.width, self.height)
-            for ghost in self.ghosts
-        ]
+        ghost_positions_current = self._ghost_positions_continuous(
+            current_g_cost, current_rotation, base_broken
+        )
+        ghost_positions_next = self._ghost_positions_continuous(
+            next_g_cost, current_rotation, base_broken
+        )
+        ghost_positions_current_set = set(ghost_positions_current)
         ghost_positions_next_set = set(ghost_positions_next)
         ghost_swaps = set(zip(ghost_positions_current, ghost_positions_next))
 
@@ -237,7 +304,6 @@ class PacmanProblem:
             "South": (0, 1),
             "West": (-1, 0),
             "East": (1, 0),
-            "Stop": (0, 0),
         }
 
         def rotate_after_steps(
@@ -245,6 +311,7 @@ class PacmanProblem:
             food: FrozenSet[Coordinate],
             pies: FrozenSet[Coordinate],
             next_step_mod: int,
+            broken_walls_base: FrozenSet[Coordinate],
         ) -> Tuple[int, Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate], Set[Coordinate]]:
             next_rotation = self._current_rotation(next_step_mod)
             if next_rotation != current_rotation:
@@ -254,15 +321,9 @@ class PacmanProblem:
             if next_rotation == current_rotation:
                 ghost_set = set(ghost_positions_next)
             else:
-                ghost_set = {
-                    _transform_pos(
-                        _inverse_transform_pos(g_pos, current_rotation, self.width, self.height),
-                        next_rotation,
-                        self.width,
-                        self.height,
-                    )
-                    for g_pos in ghost_positions_next
-                }
+                ghost_set = set(
+                    self._ghost_positions_continuous(next_g_cost, next_rotation, broken_walls_base)
+                )
             return next_rotation, pos, food, pies, ghost_set
 
         next_step_mod = (current_state.step_mod_cycle + 1) % self.ROTATION_CYCLE
@@ -272,21 +333,23 @@ class PacmanProblem:
             if not (0 <= nx < width_rot and 0 <= ny < height_rot):
                 continue
             next_pos = (nx, ny)
-            if (next_pos in current_walls and current_state.pie_timer <= 0) or next_pos in ghost_positions_next_set:
+            # Track if we break a wall this move (store in base coordinates)
+            broke_wall_base: Optional[Coordinate] = None
+            if next_pos in current_walls:
+                if current_state.pie_timer <= 0:
+                    # Can't enter intact wall without pie
+                    continue
+                # Eat/destroy the wall instead of phasing through
+                broke_wall_base = _inverse_transform_pos(next_pos, current_rotation, self.width, self.height)
+            # Cannot step onto a ghost's current or next position
+            if next_pos in ghost_positions_current_set or next_pos in ghost_positions_next_set:
                 continue
             # Pass-through swap: Pac-Man goes to a ghost's current tile while that ghost moves into Pac-Man's tile
             if (next_pos, current_state.pos) in ghost_swaps:
                 continue
 
-            # Auto-teleport to the opposite (farthest) corner if stepping onto a teleport tile
-            if next_pos in current_teleports:
-                # pick the farthest teleport (Manhattan) as the opposite corner
-                candidates = [t for t in current_teleports if t != next_pos]
-                if candidates:
-                    tx, ty = next_pos
-                    def manhattan(p):
-                        return abs(p[0] - tx) + abs(p[1] - ty)
-                    next_pos = max(candidates, key=manhattan)
+            # No auto-teleport on entry; explicit "Teleport to ..." actions
+            # are enumerated below when standing on a teleport tile.
 
             pie_timer = max(0, current_state.pie_timer - 1)
             next_pies = current_state.pies_left
@@ -295,8 +358,9 @@ class PacmanProblem:
                 next_pies = current_state.pies_left - {next_pos}
 
             next_food = current_state.food_left - {next_pos}
+            next_broken = current_state.broken_walls if broke_wall_base is None else (current_state.broken_walls | {broke_wall_base})
             next_rotation, rotated_pos, rotated_food, rotated_pies, rotated_ghosts = rotate_after_steps(
-                next_pos, next_food, next_pies, next_step_mod
+                next_pos, next_food, next_pies, next_step_mod, next_broken
             )
             if rotated_pos in rotated_ghosts:
                 continue
@@ -310,13 +374,20 @@ class PacmanProblem:
                         pies_left=rotated_pies,
                         pie_timer=pie_timer,
                         step_mod_cycle=next_step_mod,
+                        broken_walls=next_broken,
                     ),
                 )
             )
 
+        # Note: 'Stop' action is not part of the rules; not generated.
+
         if current_state.pos in current_teleports:
             for target in current_teleports:
-                if target == current_state.pos or target in ghost_positions_next_set:
+                if (
+                    target == current_state.pos
+                    or target in ghost_positions_current_set
+                    or target in ghost_positions_next_set
+                ):
                     continue
                 # Pass-through on teleport too
                 if (target, current_state.pos) in ghost_swaps:
@@ -329,7 +400,7 @@ class PacmanProblem:
 
                 next_food = current_state.food_left - {target}
                 next_rotation, rotated_pos, rotated_food, rotated_pies, rotated_ghosts = rotate_after_steps(
-                    target, next_food, next_pies, next_step_mod
+                    target, next_food, next_pies, next_step_mod, current_state.broken_walls
                 )
                 if rotated_pos in rotated_ghosts:
                     continue
@@ -343,6 +414,7 @@ class PacmanProblem:
                             pies_left=rotated_pies,
                             pie_timer=pie_timer,
                             step_mod_cycle=next_step_mod,
+                            broken_walls=current_state.broken_walls,
                         ),
                     )
                 )

@@ -1,4 +1,5 @@
 import pygame
+import threading
 
 from pacman_problem import PacmanProblem, _transform_pos
 from strategies import solve_pacman_problem
@@ -32,6 +33,10 @@ class PacmanGame:
         self.solution_cost = 0
         self.animation_delay = 100
         self.last_move_time = 0
+        # Async search state
+        self._search_thread = None
+        self._searching = False
+        self._search_result = None  # tuple[list[str], int] | None
 
     def run(self):
         clock = pygame.time.Clock()
@@ -62,7 +67,6 @@ class PacmanGame:
                 pygame.K_DOWN: "South",
                 pygame.K_LEFT: "West",
                 pygame.K_RIGHT: "East",
-                pygame.K_SPACE: "Stop",
             }
             action = key_to_action.get(event.key)
             if action:
@@ -98,20 +102,16 @@ class PacmanGame:
     def _apply_action(self, action_name: str) -> bool:
         # Precompute ghost positions for swap detection on this tick
         rotation_now = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
-        ghosts_now = [
-            _transform_pos(g.get_position(self.steps), rotation_now, self.problem.width, self.problem.height)
-            for g in self.problem.ghosts
-        ]
-        ghosts_next = [
-            _transform_pos(g.get_position(self.steps + 1), rotation_now, self.problem.width, self.problem.height)
-            for g in self.problem.ghosts
-        ]
+        width_rot, height_rot = self.problem.rotated_dimensions[rotation_now]
+        base_broken = getattr(self.current_state, "broken_walls", frozenset())
+        ghosts_now = self.problem._ghost_positions_continuous(self.steps, rotation_now, base_broken)
+        ghosts_next = self.problem._ghost_positions_continuous(self.steps + 1, rotation_now, base_broken)
         ghost_swaps = set(zip(ghosts_now, ghosts_next))
 
         # Compute intended target position (for manual arrows and auto replay)
         intended_pos = None
-        if action_name in ("North", "South", "West", "East", "Stop"):
-            dx, dy = {"North": (0, -1), "South": (0, 1), "West": (-1, 0), "East": (1, 0), "Stop": (0, 0)}[
+        if action_name in ("North", "South", "West", "East"):
+            dx, dy = {"North": (0, -1), "South": (0, 1), "West": (-1, 0), "East": (1, 0)}[
                 action_name
             ]
             intended_pos = (self.current_state.pos[0] + dx, self.current_state.pos[1] + dy)
@@ -125,20 +125,31 @@ class PacmanGame:
         next_state = successors.get(action_name)
         if not next_state:
             # If the move was rejected by the model due to a ghost pass-through, treat as death
-            if intended_pos is not None and (intended_pos, self.current_state.pos) in ghost_swaps:
-                print("Game Over!")
-                self.reset_game()
-                return False
+            if intended_pos is not None:
+                # Swap-through collision
+                if (intended_pos, self.current_state.pos) in ghost_swaps and self.current_state.pie_timer <= 0:
+                    print("Game Over!")
+                    self.reset_game()
+                    return False
+                # Direct step into a ghost's next tile should also be death when not powered
+                if intended_pos in ghosts_next and self.current_state.pie_timer <= 0:
+                    print("Game Over!")
+                    self.reset_game()
+                    return False
+                # Direct step into a ghost's current tile should be death too when not powered
+                if intended_pos in ghosts_now and self.current_state.pie_timer <= 0:
+                    print("Game Over!")
+                    self.reset_game()
+                    return False
             return False
         self.current_state = next_state
         self.steps += 1
 
         # After applying the action, ensure Pac-Man is not sharing a tile with a ghost.
         rotation = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
-        ghost_positions = {
-            _transform_pos(ghost.get_position(self.steps), rotation, self.problem.width, self.problem.height)
-            for ghost in self.problem.ghosts
-        }
+        width_rot, height_rot = self.problem.rotated_dimensions[rotation]
+        base_broken = getattr(self.current_state, "broken_walls", frozenset())
+        ghost_positions = set(self.problem._ghost_positions_continuous(self.steps, rotation, base_broken))
         if self.current_state.pos in ghost_positions:
             print("Game Over!")
             self.reset_game()
@@ -153,24 +164,41 @@ class PacmanGame:
     def _update(self):
         if self.game_state == "MANUAL":
             rotation = (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
-            ghost_positions = {
-                _transform_pos(ghost.get_position(self.steps), rotation, self.problem.width, self.problem.height)
-                for ghost in self.problem.ghosts
-            }
+            width_rot, height_rot = self.problem.rotated_dimensions[rotation]
+            base_broken = getattr(self.current_state, "broken_walls", frozenset())
+            ghost_positions = set(self.problem._ghost_positions_continuous(self.steps, rotation, base_broken))
             if self.current_state.pos in ghost_positions:
                 print("Game Over!")
                 self.reset_game()
         elif self.game_state == "AUTO_SEARCH":
-            print("Finding optimal path using A*...")
-            path, cost = solve_pacman_problem(self.problem)
-            if path:
-                self.solution_path = list(path)
-                self.solution_cost = cost
-                print(f"\n--- SOLUTION FOUND ---\nPath Cost: {cost}\nActions: {path}")
-                self.game_state = "AUTO_ANIMATE"
+            # Non-blocking: start the solver in a background thread and keep UI responsive
+            if not self._searching:
+                print("Finding optimal path using A* (async)...")
+                self._searching = True
+                self._search_result = None
+
+                def _worker():
+                    result = solve_pacman_problem(self.problem)
+                    # Store result as (path, cost) or (None, 0)
+                    self._search_result = result
+
+                self._search_thread = threading.Thread(target=_worker, daemon=True)
+                self._search_thread.start()
             else:
-                print("Could not find a solution.")
-                self.game_state = "MENU"
+                # Poll for result
+                if self._search_result is not None:
+                    path, cost = self._search_result
+                    if path:
+                        self.solution_path = list(path)
+                        self.solution_cost = cost
+                        print(f"\n--- SOLUTION FOUND ---\nPath Cost: {cost}\nActions: {path}")
+                        self.game_state = "AUTO_ANIMATE"
+                    else:
+                        print("Could not find a solution.")
+                        self.game_state = "MENU"
+                    # Reset search flags
+                    self._searching = False
+                    self._search_thread = None
         elif self.game_state == "AUTO_ANIMATE":
             current_time = pygame.time.get_ticks()
             if current_time - self.last_move_time > self.animation_delay:
@@ -192,7 +220,16 @@ class PacmanGame:
         return self.problem.rotated_dimensions[self._current_rotation()]
 
     def _current_walls(self):
-        return self.problem.rotated_walls[self._current_rotation()]
+        rotation = self._current_rotation()
+        walls = set(self.problem.rotated_walls[rotation])
+        # Remove any walls broken by Pac-Man (tracked in base coordinates)
+        if hasattr(self.current_state, "broken_walls") and self.current_state.broken_walls:
+            broken_rot = {
+                _transform_pos(b, rotation, self.problem.width, self.problem.height)
+                for b in self.current_state.broken_walls
+            }
+            walls -= broken_rot
+        return walls
 
     def _current_teleports(self):
         return self.problem.rotated_teleports[self._current_rotation()]
@@ -202,10 +239,9 @@ class PacmanGame:
 
     def _ghost_positions(self) -> set[tuple[int, int]]:
         rotation = self._current_rotation()
-        return {
-            _transform_pos(ghost.get_position(self.steps), rotation, self.problem.width, self.problem.height)
-            for ghost in self.problem.ghosts
-        }
+        width_rot, height_rot = self.problem.rotated_dimensions[rotation]
+        base_broken = getattr(self.current_state, "broken_walls", frozenset())
+        return set(self.problem._ghost_positions_continuous(self.steps, rotation, base_broken))
 
     # ------------------------------------------------------------------ Rendering
     def _draw(self):
@@ -263,7 +299,8 @@ class PacmanGame:
                 (center_x, 15),
             )
         elif self.game_state == "AUTO_SEARCH":
-            self._draw_text("Finding optimal path...", (center_x, self.window_size_h / 2))
+            dots = "." * (1 + (pygame.time.get_ticks() // 500) % 3)
+            self._draw_text(f"Finding optimal path{dots}", (center_x, self.window_size_h / 2))
         elif self.game_state == "AUTO_ANIMATE":
             self._draw_text(
                 f"Auto | Steps: {self.steps}/{self.solution_cost} | Food: {len(self.current_state.food_left)}",
