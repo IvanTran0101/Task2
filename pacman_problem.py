@@ -330,6 +330,10 @@ class PacmanProblem:
 
         next_step_mod = (current_state.step_mod_cycle + 1) % self.ROTATION_CYCLE
 
+        # Order 4-direction moves by heuristic to guide A*
+        from strategies import pacman_heuristic  # local import to avoid circular deps at load time
+        move_succ: list[tuple[int, tuple[str, PacmanSearchState]]] = []
+
         for name, (dx, dy) in actions.items():
             nx, ny = current_state.pos[0] + dx, current_state.pos[1] + dy
             if not (0 <= nx < width_rot and 0 <= ny < height_rot):
@@ -367,19 +371,21 @@ class PacmanProblem:
             if rotated_pos in rotated_ghosts:
                 continue
 
-            successors.append(
-                (
-                    name,
-                    PacmanSearchState(
-                        pos=rotated_pos,
-                        food_left=rotated_food,
-                        pies_left=rotated_pies,
-                        pie_timer=pie_timer,
-                        step_mod_cycle=next_step_mod,
-                        broken_walls=next_broken,
-                    ),
-                )
+            new_state = PacmanSearchState(
+                pos=rotated_pos,
+                food_left=rotated_food,
+                pies_left=rotated_pies,
+                pie_timer=pie_timer,
+                step_mod_cycle=next_step_mod,
+                broken_walls=next_broken,
             )
+            h = pacman_heuristic(new_state, self)
+            move_succ.append((h, (name, new_state)))
+
+        # push moves ordered by increasing h
+        move_succ.sort(key=lambda x: x[0])
+        for _, item in move_succ:
+            successors.append(item)
 
         # Note: 'Stop' action is not part of the rules; not generated.
 
