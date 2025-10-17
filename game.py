@@ -4,6 +4,7 @@ import threading
 
 from pacman_problem import PacmanProblem, _transform_pos
 from strategies import solve_pacman_problem
+from asset_manager import AssetManager
 
 
 class PacmanGame:
@@ -18,6 +19,8 @@ class PacmanGame:
         self.screen = pygame.display.set_mode((self.window_size_w, self.window_size_h))
         pygame.display.set_caption("Pac-Man A* Search (Rotating Maze)")
         self.font = pygame.font.Font(None, 24)
+        # Optional assets loader
+        self.assets = AssetManager("assets", self.tile_size)
 
         self.reset_game()
 
@@ -273,6 +276,7 @@ class PacmanGame:
             elements.append(({exit_pos}, "exit"))
 
         pulse = 100 + (pygame.time.get_ticks() // 8) % 80
+        tick = pygame.time.get_ticks()
         for positions, elem_type in elements:
             for sx, sy in positions:
                 rect = pygame.Rect(
@@ -282,27 +286,56 @@ class PacmanGame:
                     self.tile_size,
                 )
                 if elem_type == "wall":
-                    pygame.draw.rect(self.screen, (0, 0, 200), rect)
+                    surf = self.assets.get_tile("wall")
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        pygame.draw.rect(self.screen, (0, 0, 200), rect)
                 elif elem_type == "teleport":
-                    # pulsing teleport
-                    pygame.draw.rect(self.screen, (90, 0, 130), rect)
-                    pygame.draw.rect(self.screen, (160, 0, 210), rect.inflate(-4, -4), 2)
+                    surf = self.assets.get_tile("teleport")
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        # pulsing teleport
+                        pygame.draw.rect(self.screen, (90, 0, 130), rect)
+                        pygame.draw.rect(self.screen, (160, 0, 210), rect.inflate(-4, -4), 2)
                 elif elem_type == "food":
-                    pygame.draw.circle(self.screen, (255, 255, 255), rect.center, 2)
+                    surf = self.assets.get_tile("food")
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        pygame.draw.circle(self.screen, (255, 255, 255), rect.center, 2)
                 elif elem_type == "pie":
-                    pygame.draw.circle(self.screen, (255, 182, 193), rect.center, 6)
+                    surf = self.assets.get_tile("pie")
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        pygame.draw.circle(self.screen, (255, 182, 193), rect.center, 6)
                 elif elem_type == "ghost":
-                    # shadow
-                    shadow = pygame.Rect(rect.x+2, rect.y+rect.height-6, rect.width-4, 6)
-                    pygame.draw.ellipse(self.screen, (0,0,0,120), shadow)
-                    pygame.draw.rect(self.screen, (255, 105, 180), rect)
+                    surf = self.assets.get_ghost(tick)
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        # shadow
+                        shadow = pygame.Rect(rect.x+2, rect.y+rect.height-6, rect.width-4, 6)
+                        pygame.draw.ellipse(self.screen, (0,0,0,120), shadow)
+                        pygame.draw.rect(self.screen, (255, 105, 180), rect)
                 elif elem_type == "exit":
-                    pygame.draw.rect(self.screen, (0, 255, 0), rect)
+                    surf = self.assets.get_tile("exit")
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        pygame.draw.rect(self.screen, (0, 255, 0), rect)
                 elif elem_type == "pacman":
-                    # shadow
-                    shadow = pygame.Rect(rect.x+2, rect.y+rect.height-6, rect.width-4, 6)
-                    pygame.draw.ellipse(self.screen, (0,0,0,120), shadow)
-                    self._draw_pacman(rect)
+                    # Try sprite; fall back to vector Pac-Man
+                    direction = self._dir_name(self.last_dir)
+                    surf = self.assets.get_pacman(direction, tick)
+                    if surf:
+                        self.screen.blit(surf, rect.topleft)
+                    else:
+                        shadow = pygame.Rect(rect.x+2, rect.y+rect.height-6, rect.width-4, 6)
+                        pygame.draw.ellipse(self.screen, (0,0,0,120), shadow)
+                        self._draw_pacman(rect)
 
         center_x = self.window_size_w / 2
         if self.game_state == "MENU":
@@ -326,6 +359,12 @@ class PacmanGame:
     def _draw_text(self, text, position, color=(255, 255, 255)):
         text_surface = self.font.render(text, True, color)
         self.screen.blit(text_surface, text_surface.get_rect(center=position))
+
+    def _dir_name(self, dxy: tuple[int, int]) -> str:
+        dx, dy = dxy
+        if abs(dx) >= abs(dy):
+            return "right" if dx >= 0 else "left"
+        return "down" if dy > 0 else "up"
 
     # ------------------------------------------------------------------ Pac-Man drawing (Google Doodle-like)
     def _draw_pacman(self, rect: pygame.Rect):

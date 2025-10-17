@@ -1,0 +1,27 @@
+{
+  "source": "assets/Arcade - Pac-Man - Miscellaneous - General Sprites.png",
+  "tile_size": 20,
+  "scale_to_tile": true,
+  "outputs": [
+    {"name": "pacman_right_0.png", "rect": [488, 16, 24, 32]},
+    {"name": "pacman_right_1.png", "rect": [520, 16, 30, 32]},
+    {"name": "pacman_right_2.png", "rect": [552, 16, 32, 32]},
+
+    {"name": "pacman_left_0.png",  "rect": [488, 16, 24, 32], "transform": "flip_h"},
+    {"name": "pacman_left_1.png",  "rect": [520, 16, 30, 32], "transform": "flip_h"},
+    {"name": "pacman_left_2.png",  "rect": [552, 16, 32, 32], "transform": "flip_h"},
+
+    {"name": "pacman_up_0.png",    "rect": [488, 16, 24, 32], "transform": "rot270"},
+    {"name": "pacman_up_1.png",    "rect": [520, 16, 30, 32], "transform": "rot270"},
+    {"name": "pacman_up_2.png",    "rect": [552, 16, 32, 32], "transform": "rot270"},
+
+    {"name": "pacman_down_0.png",  "rect": [488, 16, 24, 32], "transform": "rot90"},
+    {"name": "pacman_down_1.png",  "rect": [520, 16, 30, 32], "transform": "rot90"},
+    {"name": "pacman_down_2.png",  "rect": [552, 16, 32, 32], "transform": "rot90"},
+
+    {"name": "ghost_0.png",        "rect": [489, 65, 14, 14]},
+    {"name": "ghost_1.png",        "rect": [505, 65, 14, 14]},
+
+    {"name": "food.png",           "rect": [489, 1, 13, 13]}
+  ]
+}
