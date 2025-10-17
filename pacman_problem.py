@@ -65,10 +65,12 @@ class PacmanProblem:
         self.height = len(layout_text)
         self._parse_layout()
         # Caches to speed up ghost position computation across the search
-        # Keyed by (g_cost, rotation_index, broken_walls_base)
-        self._ghost_pos_cache: Dict[Tuple[int, int, FrozenSet[Coordinate]], List[Coordinate]] = {}
-        # Seed positions at the start of a rotation window: (g0, rotation, broken_walls_base)
-        self._ghost_seed_cache: Dict[Tuple[int, int, FrozenSet[Coordinate]], List[Coordinate]] = {}
+        # Important: cache is keyed WITHOUT broken_walls so ghosts don't "jump"
+        # when walls change mid-window; they keep continuity until next tick/rotation.
+        # Keyed by (g_cost, rotation_index)
+        self._ghost_pos_cache: Dict[Tuple[int, int], List[Coordinate]] = {}
+        # Seed positions at the start of a rotation window: (g0, rotation)
+        self._ghost_seed_cache: Dict[Tuple[int, int], List[Coordinate]] = {}
 
     # ------------------------------------------------------------------ Layout
     def _parse_layout(self) -> None:
@@ -194,7 +196,7 @@ class PacmanProblem:
         if not self.ghosts:
             return []
 
-        cache_key = (g_cost, rotation, broken_walls_base)
+        cache_key = (g_cost, rotation)
         if cache_key in self._ghost_pos_cache:
             return self._ghost_pos_cache[cache_key]
 
@@ -206,8 +208,8 @@ class PacmanProblem:
         s = g_cost % self.ROTATION_PERIOD
         g0 = g_cost - s
 
-        # Seed positions at the start of this rotation window
-        seeds_key = (g0, rotation, broken_walls_base)
+        # Seed positions at the start of this rotation window (broken walls ignored for continuity)
+        seeds_key = (g0, rotation)
         if seeds_key in self._ghost_seed_cache:
             seeds = self._ghost_seed_cache[seeds_key]
         else:
@@ -382,6 +384,9 @@ class PacmanProblem:
         # Note: 'Stop' action is not part of the rules; not generated.
 
         if current_state.pos in current_teleports:
+            # Order teleport successors by heuristic to guide A* expansion
+            from strategies import pacman_heuristic  # local import to avoid circular issues at module load
+            tele_succ: list[tuple[int, tuple[str, PacmanSearchState]]] = []
             for target in current_teleports:
                 if (
                     target == current_state.pos
@@ -405,18 +410,19 @@ class PacmanProblem:
                 if rotated_pos in rotated_ghosts:
                     continue
 
-                successors.append(
-                    (
-                        f"Teleport to {target}",
-                        PacmanSearchState(
-                            pos=rotated_pos,
-                            food_left=rotated_food,
-                            pies_left=rotated_pies,
-                            pie_timer=pie_timer,
-                            step_mod_cycle=next_step_mod,
-                            broken_walls=current_state.broken_walls,
-                        ),
-                    )
+                new_state = PacmanSearchState(
+                    pos=rotated_pos,
+                    food_left=rotated_food,
+                    pies_left=rotated_pies,
+                    pie_timer=pie_timer,
+                    step_mod_cycle=next_step_mod,
+                    broken_walls=current_state.broken_walls,
                 )
+                h = pacman_heuristic(new_state, self)
+                tele_succ.append((h, (f"Teleport to {target}", new_state)))
+
+            tele_succ.sort(key=lambda x: x[0])
+            for _, item in tele_succ:
+                successors.append(item)
 
         return successors

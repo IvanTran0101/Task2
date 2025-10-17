@@ -11,6 +11,11 @@ Coordinate = Tuple[int, int]
 _distance_eff_cache: Dict[Tuple[int, int, Coordinate, FrozenSet[Coordinate]], Dict[Coordinate, int]] = {}
 # Cache MST results per (problem id, rotation, food set, broken_walls).
 _mst_cache: Dict[Tuple[int, int, FrozenSet[Coordinate], FrozenSet[Coordinate]], int] = {}
+# Cache final heuristic values per (problem, phase_in_rotation, rotation, pos, foods, broken)
+_heuristic_cache: Dict[
+    Tuple[int, int, int, Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate]],
+    int,
+] = {}
 
 
 def _effective_walls(problem, rotation: int, broken_walls_base: FrozenSet[Coordinate]) -> FrozenSet[Coordinate]:
@@ -124,23 +129,31 @@ def pacman_heuristic(state, problem):
         return 0
 
     rotation = (state.step_mod_cycle // problem.ROTATION_PERIOD) % 4
+    phase = state.step_mod_cycle % problem.ROTATION_PERIOD
+    foods = frozenset(state.food_left)
+    broken = getattr(state, 'broken_walls', frozenset())
+
+    cache_key = (id(problem), phase, rotation, state.pos, foods, broken)
+    if cache_key in _heuristic_cache:
+        return _heuristic_cache[cache_key]
 
     if not state.food_left:
         exit_pos = problem.rotated_exit[rotation]
         if not exit_pos:
+            _heuristic_cache[cache_key] = 0
             return 0
-        broken = getattr(state, 'broken_walls', frozenset())
         dist_map = _distance_map_effective(rotation, state.pos, problem, broken)
-        return dist_map.get(exit_pos, 0)
+        value = dist_map.get(exit_pos, 0)
+        _heuristic_cache[cache_key] = value
+        return value
 
-    food_set = frozenset(state.food_left)
-
-    broken = getattr(state, 'broken_walls', frozenset())
     pac_to_food = _nearest_food_distance(rotation, state, problem)
-    mst_cost = _mst_cost(rotation, food_set, problem, broken)
-    exit_tail = _exit_tail(rotation, food_set, problem, broken)
+    mst_cost = _mst_cost(rotation, foods, problem, broken)
+    exit_tail = _exit_tail(rotation, foods, problem, broken)
 
-    return pac_to_food + mst_cost + exit_tail
+    value = pac_to_food + mst_cost + exit_tail
+    _heuristic_cache[cache_key] = value
+    return value
 
 
 def solve_pacman_problem(problem):
