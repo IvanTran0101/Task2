@@ -410,20 +410,4 @@ class PacmanGame:
         eye_y = int(cy + fy * r * 0.3 + py * r * -0.2)
         pygame.draw.circle(self.screen, (0, 0, 0), (eye_x, eye_y), max(2, r // 5))
 
-    # ------------------------------------------------------------------ Pac-Man drawing (mouth animation)
-    def _draw_pacman(self, rect: pygame.Rect):
-        import math as _m
-        # Color: yellow normally, red when under pie effect
-        pac_color = (255, 255, 0) if self.current_state.pie_timer <= 0 else (255, 0, 0)
-        bg_color = (10, 10, 20)
-        center = rect.center
-        radius = self.tile_size // 2
-        # Draw body
-        pygame.draw.circle(self.screen, pac_color, center, radius)
-        # Animate mouth opening/closing each tick (face right)
-        mouth_deg = 40 if (self.steps % 2 == 0) else 8
-        a1 = _m.radians(mouth_deg)
-        a2 = _m.radians(-mouth_deg)
-        p1 = (int(center[0] + radius * _m.cos(a1)), int(center[1] + radius * _m.sin(a1)))
-        p2 = (int(center[0] + radius * _m.cos(a2)), int(center[1] + radius * _m.sin(a2)))
-        pygame.draw.polygon(self.screen, bg_color, [center, p1, p2])
+    
