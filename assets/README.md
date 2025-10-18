@@ -14,6 +14,14 @@ Tile images (optional)
 - teleport.png
 - exit.png
 
+Teleport animation (optional)
+- Provide 4+ frames named `teleport_0.png`, `teleport_1.png`, `teleport_2.png`, `teleport_3.png`.
+- The game will animate these frames automatically (~8 fps). If not present, it falls back to `teleport.png` or the default vector style.
+
+Animated GIF support
+- You can instead drop a single `teleport.gif` (animated). If present, the game will prefer it over `teleport_*.png`.
+- Per-frame durations embedded in the GIF are respected for playback.
+
 Pac‑Man sprites (optional)
 Provide 1+ frames per direction. The engine will cycle frames for a simple animation.
 - pacman_right_0.png, pacman_right_1.png, ...

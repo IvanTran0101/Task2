@@ -292,7 +292,7 @@ class PacmanGame:
                     else:
                         pygame.draw.rect(self.screen, (0, 0, 200), rect)
                 elif elem_type == "teleport":
-                    surf = self.assets.get_tile("teleport")
+                    surf = self.assets.get_teleport(tick) or self.assets.get_tile("teleport")
                     if surf:
                         self.screen.blit(surf, rect.topleft)
                     else:
