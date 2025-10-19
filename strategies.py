@@ -7,7 +7,13 @@ from pacman_problem import _transform_pos
 
 Coordinate = Tuple[int, int]
 
-# Note: Caches removed intentionally to keep implementation simple.
+# Caches re-enabled for performance and to match original heuristic behavior
+_distance_eff_cache: Dict[Tuple[int, int, Coordinate, FrozenSet[Coordinate]], Dict[Coordinate, int]] = {}
+_mst_cache: Dict[Tuple[int, int, FrozenSet[Coordinate], FrozenSet[Coordinate]], int] = {}
+_heuristic_cache: Dict[
+    Tuple[int, int, int, Coordinate, FrozenSet[Coordinate], FrozenSet[Coordinate]],
+    int,
+] = {}
 
 
 def _effective_walls(problem, rotation: int, broken_walls_base: FrozenSet[Coordinate]) -> FrozenSet[Coordinate]:
@@ -20,6 +26,10 @@ def _effective_walls(problem, rotation: int, broken_walls_base: FrozenSet[Coordi
 
 
 def _distance_map_effective(rotation: int, start: Coordinate, problem, broken_walls: FrozenSet[Coordinate]) -> Dict[Coordinate, int]:
+    key = (id(problem), rotation, start, broken_walls)
+    if key in _distance_eff_cache:
+        return _distance_eff_cache[key]
+
     width, height = problem.rotated_dimensions[rotation]
     walls = _effective_walls(problem, rotation, broken_walls)
     teleports = problem.rotated_teleports[rotation]
@@ -50,6 +60,7 @@ def _distance_map_effective(rotation: int, start: Coordinate, problem, broken_wa
                 distances[target] = base + 1
                 q.append(target)
 
+    _distance_eff_cache[key] = distances
     return distances
 
 
@@ -65,6 +76,10 @@ def _nearest_food_distance(rotation: int, state, problem) -> int:
 def _mst_cost(rotation: int, foods: FrozenSet[Coordinate], problem, broken: FrozenSet[Coordinate]) -> int:
     if len(foods) <= 1:
         return 0
+
+    key = (id(problem), rotation, foods, broken)
+    if key in _mst_cache:
+        return _mst_cache[key]
 
     foods_list = list(foods)
     visited = {foods_list[0]}
@@ -88,6 +103,7 @@ def _mst_cost(rotation: int, foods: FrozenSet[Coordinate], problem, broken: Froz
         visited.add(best_food)
         total += best_cost
 
+    _mst_cache[key] = total
     return total
 
 
@@ -111,20 +127,29 @@ def pacman_heuristic(state, problem):
         return 0
 
     rotation = (state.step_mod_cycle // problem.ROTATION_PERIOD) % 4
+    phase = state.step_mod_cycle % problem.ROTATION_PERIOD
     foods = frozenset(state.food_left)
     broken = getattr(state, 'broken_walls', frozenset())
+
+    cache_key = (id(problem), phase, rotation, state.pos, foods, broken)
+    if cache_key in _heuristic_cache:
+        return _heuristic_cache[cache_key]
 
     if not state.food_left:
         exit_pos = problem.rotated_exit[rotation]
         if not exit_pos:
             return 0
         dist_map = _distance_map_effective(rotation, state.pos, problem, broken)
-        return dist_map.get(exit_pos, 0)
+        value = dist_map.get(exit_pos, 0)
+        _heuristic_cache[cache_key] = value
+        return value
 
     pac_to_food = _nearest_food_distance(rotation, state, problem)
     mst_cost = _mst_cost(rotation, foods, problem, broken)
     exit_tail = _exit_tail(rotation, foods, problem, broken)
-    return pac_to_food + mst_cost + exit_tail
+    value = pac_to_food + mst_cost + exit_tail
+    _heuristic_cache[cache_key] = value
+    return value
 
 
 def solve_pacman_problem(problem):
