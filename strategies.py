@@ -3,7 +3,7 @@ from math import inf
 from typing import Dict, FrozenSet, Tuple
 
 from search import a_star_search
-from pacman_problem import _transform_pos
+from pacman_problem import _transform_pos, _inverse_transform_pos
 
 Coordinate = Tuple[int, int]
 
@@ -124,34 +124,72 @@ def _exit_tail(rotation: int, foods: FrozenSet[Coordinate], problem, broken: Fro
 
 
 def pacman_heuristic(state, problem):
-    # If a pie is active, the heuristic falls back to zero to stay admissible.
+    # If a pie is active, the heuristic falls back to zero to stay conservative.
     if state.pie_timer > 0:
         return 0
 
-    rotation = (state.step_mod_cycle // problem.ROTATION_PERIOD) % 4
+    cur_rotation = (state.step_mod_cycle // problem.ROTATION_PERIOD) % 4
     phase = state.step_mod_cycle % problem.ROTATION_PERIOD
-    foods = frozenset(state.food_left)
+    foods_cur = frozenset(state.food_left)
     broken = getattr(state, 'broken_walls', frozenset())
 
-    cache_key = (id(problem), phase, rotation, state.pos, foods, broken)
+    cache_key = (id(problem), phase, cur_rotation, state.pos, foods_cur, broken)
     if cache_key in _heuristic_cache:
         return _heuristic_cache[cache_key]
 
-    if not state.food_left:
-        exit_pos = problem.rotated_exit[rotation]
-        if not exit_pos:
+    # Helper: rotate a coordinate from current rotation to target rotation.
+    def _rot_coord(c):
+        base = _inverse_transform_pos(c, cur_rotation, problem.width, problem.height)
+        return _transform_pos(base, (cur_rotation + 1) % 4, problem.width, problem.height)
+
+    # Heuristic in current rotation (k = 0)
+    if not foods_cur:
+        exit_pos_cur = problem.rotated_exit[cur_rotation]
+        if not exit_pos_cur:
             _heuristic_cache[cache_key] = 0
             return 0
-        dist_map = _distance_map_effective(rotation, state.pos, problem, broken)
-        value = dist_map.get(exit_pos, 0)
+        dist_map_cur = _distance_map_effective(cur_rotation, state.pos, problem, broken)
+        best_cur = dist_map_cur.get(exit_pos_cur, 0)
+        # Phase-aware alternative: rotate once after boundary and pay waiting steps
+        # Steps until the next rotation boundary
+        k_boundary = problem.ROTATION_PERIOD if phase == 0 else (problem.ROTATION_PERIOD - phase)
+        next_rotation = (cur_rotation + 1) % 4
+        # Transform position to next rotation (foods empty)
+        pos_next = _rot_coord(state.pos)
+        exit_pos_next = problem.rotated_exit[next_rotation]
+        if exit_pos_next is None:
+            best_next = inf
+        else:
+            dist_map_next = _distance_map_effective(next_rotation, pos_next, problem, broken)
+            best_next = dist_map_next.get(exit_pos_next, inf)
+        value = min(best_cur, k_boundary + (0 if best_next is inf else best_next))
         _heuristic_cache[cache_key] = value
         return value
 
-    pac_to_food = _nearest_food_distance(rotation, state, problem)
-    mst_cost = _mst_cost(rotation, foods, problem, broken)
-    exit_tail = _exit_tail(rotation, foods, problem, broken)
+    # Current-rotation estimate
+    pac_to_food_cur = _nearest_food_distance(cur_rotation, state, problem)
+    mst_cur = _mst_cost(cur_rotation, foods_cur, problem, broken)
+    exit_tail_cur = _exit_tail(cur_rotation, foods_cur, problem, broken)
+    best_cur = pac_to_food_cur + mst_cur + exit_tail_cur
 
-    value = pac_to_food + mst_cost + exit_tail
+    # Phase-aware alternative: rotate at the next boundary and pay waiting steps
+    k_boundary = problem.ROTATION_PERIOD if phase == 0 else (problem.ROTATION_PERIOD - phase)
+    next_rotation = (cur_rotation + 1) % 4
+
+    # Rotate position and foods to next rotation orientation
+    pos_next = _rot_coord(state.pos)
+    foods_next = frozenset(_rot_coord(f) for f in foods_cur)
+
+    # Compute components in the next rotation
+    # Distance from rotated pos to nearest rotated food
+    dist_map_next = _distance_map_effective(next_rotation, pos_next, problem, broken)
+    best_food_next = min((dist_map_next.get(f, inf) for f in foods_next), default=inf)
+    pac_to_food_next = 0 if best_food_next is inf else best_food_next
+    mst_next = _mst_cost(next_rotation, foods_next, problem, broken)
+    exit_tail_next = _exit_tail(next_rotation, foods_next, problem, broken)
+    best_next = k_boundary + pac_to_food_next + mst_next + exit_tail_next
+
+    value = min(best_cur, best_next)
     _heuristic_cache[cache_key] = value
     return value
 

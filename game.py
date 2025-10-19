@@ -225,9 +225,6 @@ class PacmanGame:
     def _current_rotation(self) -> int:
         return (self.current_state.step_mod_cycle // self.problem.ROTATION_PERIOD) % 4
 
-    def _current_dimensions(self) -> tuple[int, int]:
-        return self.problem.rotated_dimensions[self._current_rotation()]
-
     def _current_walls(self):
         rotation = self._current_rotation()
         walls = set(self.problem.rotated_walls[rotation])
@@ -240,24 +237,12 @@ class PacmanGame:
             walls -= broken_rot
         return walls
 
-    def _current_teleports(self):
-        return self.problem.rotated_teleports[self._current_rotation()]
-
-    def _current_exit(self):
-        return self.problem.rotated_exit[self._current_rotation()]
-
-    def _ghost_positions(self) -> set[tuple[int, int]]:
-        rotation = self._current_rotation()
-        width_rot, height_rot = self.problem.rotated_dimensions[rotation]
-        base_broken = getattr(self.current_state, "broken_walls", frozenset())
-        return set(self.problem._ghost_positions_continuous(self.steps, rotation, base_broken))
-
     # ------------------------------------------------------------------ Rendering
     def _draw(self):
         self.screen.fill((10, 10, 20))
 
         rotation = self._current_rotation()
-        width_rot, height_rot = self._current_dimensions()
+        width_rot, height_rot = self.problem.rotated_dimensions[rotation]
         board_w = width_rot * self.tile_size
         board_h = height_rot * self.tile_size
         offset_x = (self.window_size_w - board_w) // 2
@@ -265,13 +250,17 @@ class PacmanGame:
 
         elements = [
             (self._current_walls(), "wall"),
-            (self._current_teleports(), "teleport"),
+            (self.problem.rotated_teleports[rotation], "teleport"),
             (self.current_state.food_left, "food"),
             (self.current_state.pies_left, "pie"),
-            (self._ghost_positions(), "ghost"),
+            (set(self.problem._ghost_positions_continuous(
+                self.steps,
+                rotation,
+                getattr(self.current_state, "broken_walls", frozenset())
+            )), "ghost"),
             ({self.current_state.pos}, "pacman"),
         ]
-        exit_pos = self._current_exit()
+        exit_pos = self.problem.rotated_exit[rotation]
         if exit_pos:
             elements.append(({exit_pos}, "exit"))
 
